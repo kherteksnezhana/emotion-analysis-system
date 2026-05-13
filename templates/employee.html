@@ -56,17 +56,19 @@
                             </div>
 
                             {% set emotion_class = '' %}
+                            {% set icon_name = 'meh' %}
                             {% if r.emotion %}
                                 {% set e_text = r.emotion.lower() %}
                                 {% if 'положительное' in e_text  %}
                                     {% set emotion_class = 'pos' %}
+                                    {% set icon_name = 'smile' %}
                                 {% elif 'негативное' in e_text %}
                                     {% set emotion_class = 'neg' %}
+                                    {% set icon_name = 'frown' %}
                                 {% endif %}
                             {% endif %}
                             <span class="emotion-tag {{ emotion_class }}">
-                                <i data-lucide="{% if 'положительное' in r.emotion %}smile{% elif 'негативное' in r.emotion %}frown{% else %}meh{% endif %}" 
-                                style="width: 14px; height: 14px; margin-right: 6px;"></i>
+                                <i data-lucide="{{ icon_name }}" style="width: 14px; height: 14px; margin-right: 6px;"></i>
                                 {{ r.emotion or "Нет данных" }} • {{ (r.confidence * 100)|int }}%
                             </span>
                         </div>
