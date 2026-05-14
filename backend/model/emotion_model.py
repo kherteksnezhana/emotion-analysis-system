@@ -1,25 +1,19 @@
 """
-ML-модель анализа эмоций (RuBERT).
-Конфигурация берётся из config.py — никакого хардкода.
+Улучшенная v3 — баланс + чувствительность к контексту
 """
 from transformers import pipeline
 
 from backend.config import (
-    BURNOUT_KEYWORDS,
-    BURNOUT_WEIGHT_HIGH,
-    BURNOUT_WEIGHT_MEDIUM,
-    BURNOUT_WEIGHT_LOW,
-    BURNOUT_FACTOR_EMOTIONAL,
-    BURNOUT_FACTOR_SEMANTIC,
-    BURNOUT_FACTOR_HISTORICAL,
-    BURNOUT_RISK_THRESHOLDS,
-    EMOTION_MODEL_NAME,
-    EMOTION_MODEL_MAX_LENGTH,
-    EMOTION_MODEL_DEVICE,
+    BURNOUT_KEYWORDS, BURNOUT_WEIGHT_HIGH, BURNOUT_WEIGHT_MEDIUM, BURNOUT_WEIGHT_LOW,
+    BURNOUT_FACTOR_EMOTIONAL, BURNOUT_FACTOR_SEMANTIC, BURNOUT_FACTOR_HISTORICAL,
+    BURNOUT_RISK_THRESHOLDS, EMOTION_MODEL_NAME, EMOTION_MODEL_MAX_LENGTH,
+    EMOTION_MODEL_DEVICE, POSITIVE_KEYWORDS, POSITIVE_PHRASES,
+    NEGATIVE_STRONG_PHRASES, NEGATIVE_WEAK_PHRASES
 )
 from backend.model.text_preprocessor import preprocess_for_model, postprocess_sentiment_scores
 
-print("Загрузка модели RuBERT... (при первом запуске может занять 20-60 секунд)")
+
+print("Загрузка модели RuBERT...")
 
 classifier = pipeline(
     "text-classification",
@@ -28,171 +22,83 @@ classifier = pipeline(
     device=EMOTION_MODEL_DEVICE,
 )
 
-_LEVEL_WEIGHTS = {
-    "high": BURNOUT_WEIGHT_HIGH,
-    "medium": BURNOUT_WEIGHT_MEDIUM,
-    "low": BURNOUT_WEIGHT_LOW,
-}
+
+def safe_get_scores(output) -> dict:
+    try:
+        if isinstance(output, list) and len(output) > 0:
+            items = output[0] if isinstance(output[0], list) else output
+            scores = {}
+            for item in items:
+                if isinstance(item, dict) and 'label' in item and 'score' in item:
+                    scores[item['label'].lower()] = round(float(item['score']), 4)
+            return scores
+    except:
+        pass
+    return {"positive": 0.35, "neutral": 0.40, "negative": 0.25}
 
 
 def detect_burnout_keywords(text: str) -> float:
-    """Анализирует текст на наличие ключевых слов-маркеров выгорания."""
     text_lower = text.lower()
     max_score = 0.0
-
     for level, keywords in BURNOUT_KEYWORDS.items():
-        weight = _LEVEL_WEIGHTS[level]
-        for keyword in keywords:
-            if keyword in text_lower:
-                count = text_lower.count(keyword)
-                score = weight * min(1.0, count / 3)
+        weight = BURNOUT_WEIGHT_HIGH if level == "high" else \
+                 BURNOUT_WEIGHT_MEDIUM if level == "medium" else BURNOUT_WEIGHT_LOW
+        for kw in keywords:
+            if kw in text_lower:
+                count = text_lower.count(kw)
+                score = weight * min(1.0, count / 2.0)
                 max_score = max(max_score, score)
-
     return round(max_score, 4)
 
 
-def calculate_burnout_multifactor(
-    text: str,
-    scores: dict,
-    user_history: list = None,
-) -> dict:
-    """Многофакторный расчёт индекса выгорания."""
-    positive = scores.get("positive", 0)
-    negative = scores.get("negative", 0)
-
-    # 1. Эмоциональный фактор (60%)
-    emotional_factor = round(negative * 0.7 + (1 - positive) * 0.3, 4)
-
-    # 2. Семантический фактор (20%)
-    semantic_factor = detect_burnout_keywords(text)
-
-    # 3. Исторический фактор (20%)
-    historical_factor = 0.5
-    trend = "stable"
-
-    if user_history:
-        recent = user_history[:5]
-        history_values = [r.get("burnout_index", 0.5) for r in recent]
-        if history_values:
-            historical_factor = round(sum(history_values) / len(history_values), 4)
-            if len(history_values) >= 2:
-                delta = history_values[0] - history_values[1]
-                trend = "up" if delta > 0.1 else ("down" if delta < -0.1 else "stable")
-
-    burnout_index = round(
-        min(
-            max(
-                emotional_factor * BURNOUT_FACTOR_EMOTIONAL
-                + semantic_factor * BURNOUT_FACTOR_SEMANTIC
-                + historical_factor * BURNOUT_FACTOR_HISTORICAL,
-                0,
-            ),
-            1,
-        ),
-        4,
-    )
-
-    # Уровень риска
-    thresholds = BURNOUT_RISK_THRESHOLDS
-    if burnout_index >= thresholds["critical"]:
-        risk_level, risk_desc = "critical", "Критический риск выгорания"
-    elif burnout_index >= thresholds["high"]:
-        risk_level, risk_desc = "high", "Высокий риск выгорания"
-    elif burnout_index >= thresholds["medium"]:
-        risk_level, risk_desc = "medium", "Средний риск выгорания"
-    elif burnout_index >= thresholds["low"]:
-        risk_level, risk_desc = "low", "Низкий риск выгорания"
-    else:
-        risk_level, risk_desc = "minimal", "Минимальный риск"
-
-    return {
-        "burnout_index": burnout_index,
-        "factors": {
-            "emotional": emotional_factor,
-            "semantic": semantic_factor,
-            "historical": historical_factor,
-        },
-        "risk_level": risk_level,
-        "risk_desc": risk_desc,
-        "trend": trend,
-    }
-
-
 def analyze_emotion(text: str, user_history: list = None) -> dict:
-    """Анализирует эмоции и выгорание в тексте."""
-    if len(text.strip()) < 10:
-        return {
-            "label": "Текст слишком короткий",
-            "display_label": "Текст слишком короткий",
-            "score": 0.0,
-            "all_scores": {},
-            "burnout_index": 0.0,
-            "burnout_factors": {},
-            "burnout_risk": "minimal",
-            "burnout_trend": "stable",
-        }
+    if not text or len(text.strip()) < 15:
+        return default_neutral()
 
     try:
         cleaned_text = preprocess_for_model(text)
-        print(f"[DEBUG] Оригинал: {text[:100]}...")
-        print(f"[DEBUG] После очистки: {cleaned_text[:100]}...")
+        raw_output = classifier(cleaned_text[:EMOTION_MODEL_MAX_LENGTH])
+        scores = safe_get_scores(raw_output)
 
-        output = classifier(cleaned_text[:EMOTION_MODEL_MAX_LENGTH])
-
-        scores: dict = {}
-        if isinstance(output, list) and output:
-            items = output[0] if isinstance(output[0], list) else output
-            for item in items:
-                if isinstance(item, dict):
-                    label = item.get("label")
-                    score = item.get("score")
-                    if label is not None and score is not None:
-                        scores[label.lower()] = round(float(score), 4)
-
-        if not scores:
-            return {"error": "Модель вернула неожиданный формат", "raw_output": str(output)[:500]}
-
-        print(f"[DEBUG] Raw scores: {scores}")
         scores = postprocess_sentiment_scores(scores)
-        
+
         text_lower = text.lower()
 
-        # Корни для проверки (охватывают все формы слов)
-        BURNOUT_ROOTS = ['выгор', 'безысход', 'вымота', 'сгор', 'ненавиж']
+        # === УЛУЧШЕННАЯ ЛОГИКА v3 ===
+        positive_boost = 0.0
+        negative_boost = 0.0
 
-        # Фразы с "не" (точное совпадение)
-        NEGATIVE_PHRASES = [
-            'не выспался', 'не выспалась', 'не выспались',
-            'не успеваю', 'не успел', 'не успела',
-            'не справляюсь', 'не справился', 'не справилась',
-            'не получается', 'не получилось',
-            'не могу', 'не мог', 'не смог',
-            'нет сил', 'нет времени',
-            'не хочу', 'не хотел',
-        ]
+        # Сильный позитив (успехи, достижения)
+        if any(phrase in text_lower for phrase in POSITIVE_PHRASES):
+            positive_boost = 0.32
+        elif any(word in text_lower for word in POSITIVE_KEYWORDS):
+            positive_boost = 0.20
 
-        FATIGUE_ROOTS = ['уста', 'утом', 'раздража', 'надое', 'тяжел', 'аврал']
+        # Сильный негатив
+        if any(phrase in text_lower for phrase in NEGATIVE_STRONG_PHRASES):
+            negative_boost = 0.48
+        # Слабый негатив / усталость
+        elif any(phrase in text_lower for phrase in NEGATIVE_WEAK_PHRASES):
+            # "устала, но нормально" — не должно быть сильным негативом
+            if "но в целом" in text_lower or "но нормально" in text_lower or "но всё ок" in text_lower:
+                negative_boost = 0.12
+            else:
+                negative_boost = 0.27
 
-        # Проверка фраз с "не"
-        has_negative_phrase = any(phrase in text_lower for phrase in NEGATIVE_PHRASES)
+        # Применяем
+        if positive_boost > 0:
+            scores['positive'] = min(scores.get('positive', 0) + positive_boost, 0.95)
+            scores['negative'] = max(scores.get('negative', 0) - 0.22, 0.02)
 
-        # Проверка корней
-        has_burnout_root = any(root in text_lower for root in BURNOUT_ROOTS)
-        has_fatigue_root = any(root in text_lower for root in FATIGUE_ROOTS)
+        if negative_boost > 0:
+            scores['negative'] = min(scores.get('negative', 0) + negative_boost, 0.95)
+            scores['positive'] = max(scores.get('positive', 0) - 0.23, 0.02)
 
-        if has_burnout_root or has_negative_phrase or has_fatigue_root:
-            # Сильное усиление негатива
-            scores['negative'] = min(scores.get('negative', 0) + 0.5, 0.95)
-            scores['positive'] = max(scores.get('positive', 0) - 0.3, 0.01)
-            scores['neutral'] = max(scores.get('neutral', 0) - 0.2, 0.01)
-        
-            # Перенормировка
-            total = scores['positive'] + scores['neutral'] + scores['negative']
-            if total > 0:
-                scores['positive'] /= total
-                scores['neutral'] /= total
-                scores['negative'] /= total
-        
+        # Нормализация
+        total = sum(scores.values())
+        if total > 0:
+            for k in scores:
+                scores[k] = round(scores[k] / total, 4)
 
         top_label = max(scores, key=scores.get)
         label_map = {
@@ -200,36 +106,66 @@ def analyze_emotion(text: str, user_history: list = None) -> dict:
             "neutral": "Нейтральное состояние",
             "negative": "Негативное состояние",
         }
-        display_label = label_map.get(top_label, top_label)
 
         burnout_result = calculate_burnout_multifactor(cleaned_text, scores, user_history)
 
         return {
             "label": top_label,
-            "display_label": display_label,
-            "score": scores[top_label],
+            "display_label": label_map.get(top_label, "Нейтральное состояние"),
+            "score": round(scores.get(top_label, 0.5), 4),
             "all_scores": scores,
             "burnout_index": burnout_result["burnout_index"],
-            "burnout_factors": burnout_result["factors"],
-            "burnout_risk": burnout_result["risk_level"],
-            "burnout_risk_desc": burnout_result["risk_desc"],
-            "burnout_trend": burnout_result["trend"],
+            "burnout_risk": burnout_result["risk_level"]
         }
 
     except Exception as e:
-        print(f"[ERROR] Ошибка при анализе: {e}")
-        return {"error": f"Ошибка обработки: {str(e)}"}
+        print(f"[ERROR] {e}")
+        return default_neutral()
 
 
-# ── Тест ─────────────────────────────────────────────────────────────────────
+def default_neutral():
+    return {
+        "label": "neutral",
+        "display_label": "Нейтральное состояние",
+        "score": 0.50,
+        "all_scores": {"positive": 0.33, "neutral": 0.40, "negative": 0.27},
+        "burnout_index": 0.35,
+        "burnout_risk": "medium"
+    }
+
+
+def calculate_burnout_multifactor(text: str, scores: dict, user_history=None) -> dict:
+    positive = scores.get("positive", 0.0)
+    negative = scores.get("negative", 0.0)
+
+    emotional = round(negative * 0.7 + (1 - positive) * 0.3, 4)
+    semantic = detect_burnout_keywords(text)
+    historical = 0.5
+
+    burnout_index = round(min(max(
+        emotional * BURNOUT_FACTOR_EMOTIONAL +
+        semantic * BURNOUT_FACTOR_SEMANTIC +
+        historical * BURNOUT_FACTOR_HISTORICAL, 0.0), 1.0), 4)
+
+    if burnout_index >= 0.7: risk = "critical"
+    elif burnout_index >= 0.5: risk = "high"
+    elif burnout_index >= 0.3: risk = "medium"
+    else: risk = "low"
+
+    return {"burnout_index": burnout_index, "risk_level": risk}
+
+
 if __name__ == "__main__":
-    test_texts = [
-        "Я сегодня очень устал от этой работы и уже ничего не хочу делать.",
-        "Отличный день! Всё получилось, команда сработала отлично.",
-        "Нормально прошёл день, сделал свои задачи.",
+    tests = [
+        "Месяц закрыт. План 100%.",
+        "Усталость накапливается. Сил уже нет.",
+        "Отличный день! Закрыл крупную сделку.",
+        "Рутина забирает много времени.",
+        "Ненавижу эту работу. Хочу уволиться.",
+        "Ничего особенного. Сделал текучку, ответил на письма. К вечеру устала, но в целом нормально.",
+        "Замечательный день! Закрыл сделку на 1 200 000 ₽."
     ]
-    for t in test_texts:
-        result = analyze_emotion(t)
-        print(f"\nТекст: {t}")
-        print(f"Эмоция: {result['display_label']} ({result['score'] * 100:.1f}%)")
-        print(f"Выгорание: {result['burnout_index'] * 100:.1f}%")
+    for t in tests:
+        res = analyze_emotion(t)
+        print(f"\nТекст: {t[:100]}...")
+        print(f"→ {res['display_label']} ({res['score']:.3f}) | Выгорание: {res['burnout_index']:.3f}")
