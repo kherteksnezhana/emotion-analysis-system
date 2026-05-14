@@ -163,10 +163,14 @@ function renderEmployeeList(containerId, employees) {
         if (e.last_score >= 80)      wellClass = 'high';
         else if (e.last_score < 60)  wellClass = 'low';
 
-        let burnClass = 'high';
-        if (burnoutP >= 70)          burnClass = 'low';   // высокое выгорание = плохо → стиль low
-        else if (burnoutP < 40)      burnClass = 'high';  // низкое выгорание = хорошо → стиль high
-        else                         burnClass = 'medium';
+        let burnoutClass = 'burnout-medium';
+        if (burnoutP >= 70) {
+            burnoutClass = 'burnout-high';      // красный/оранжевый - высокий риск
+        } else if (burnoutP >= 40) {
+            burnoutClass = 'burnout-medium';    // жёлтый/оранжевый - средний риск
+        } else {
+            burnoutClass = 'burnout-low';       // зелёный - низкий риск
+        }
 
         let wellIcon = 'meh';
         if (e.last_score >= 80)      wellIcon = 'smile';
@@ -180,7 +184,7 @@ function renderEmployeeList(containerId, employees) {
                 </div>
                 <div class="member-details">
                     <strong>${esc(e.full_name)}</strong>
-                    <span class="info-note">${esc(e.department)} • ${esc(e.role || 'Сотрудник')}</span>
+                    <span class="info-note">${esc(e.department)}</span>
                 </div>
             </div>
             <div class="member-stats" style="text-align:right;">
@@ -199,7 +203,7 @@ function renderEmployeeList(containerId, employees) {
                         : ''
                     }
                     <span>|</span>
-                    <span class="score-badge ${burnClass}" data-tooltip="Индекс выгорания">
+                    <span class="burnout-badge ${burnoutClass}" data-tooltip="Индекс выгорания">
                         <i data-lucide="zap" style="width:14px;height:14px;margin-right:4px;"></i>
                         ${burnoutP}%
                     </span>
@@ -235,7 +239,13 @@ function renderDataForTab() {
     if (currentTab === 'attention') {
         renderEmployeeList('attentionList', filtered.filter(e => e.has_reports && e.last_score < 60));
     } else if (currentTab === 'best') {
-        renderEmployeeList('bestList', filtered.filter(e => e.last_score >= 80));
+        const bestEmployees = filtered.filter(e => 
+            e.has_reports && 
+            e.last_score >= 80 && 
+            e.last_burnout != null && 
+            e.last_burnout < 0.4
+        );
+        renderEmployeeList('bestList', bestEmployees);
     } else if (currentTab === 'all') {
         renderEmployeeList('allEmployeesList', filtered);
     } else if (currentTab === 'burnout') {

@@ -311,23 +311,61 @@ input.error, select.error { border-color: var(--color-error); }
 .progress-bar-bg   { background: var(--color-bg-soft); border-radius: 20px; height: 6px; margin-top: 12px; overflow: hidden; }
 .progress-bar-fill { background: linear-gradient(90deg, var(--color-primary), var(--color-primary-2)); height: 100%; border-radius: 20px; transition: width 0.3s ease; }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   BADGES — score & trend
-───────────────────────────────────────────────────────────────────────────── */
-.score-badge {
+
+/* =====================================================
+   BADGES — score (взвешенный балл) & burnout (выгорание)
+   ===================================================== */
+
+/* Общие стили для всех бейджей */
+.score-badge, .burnout-badge {
     padding: 4px 12px;
     border-radius: 30px;
     font-size: 13px;
     font-weight: 700;
     display: inline-flex;
     align-items: center;
+    gap: 6px;
 }
-.score-badge.high   { background: var(--color-teal-light);    color: var(--color-teal); }
-.score-badge.medium { background: var(--color-primary-light); color: var(--color-primary); }
-.score-badge.low    { background: var(--color-error-light);   color: var(--color-error); }
-/* Новый сотрудник — нет отчётов */
-.score-badge.new    { background: var(--color-accent-light);  color: var(--color-accent); border: 1px solid #f0d090; }
 
+/* --- СТИЛИ ДЛЯ ВЗВЕШЕННОГО БАЛЛА (score-badge) --- */
+.score-badge.medium {
+    background: var(--color-teal-light);
+    color: var(--color-teal);
+}
+.score-badge.high {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+}
+.score-badge.low {
+    background: var(--color-error-light);
+    color: var(--color-error);
+}
+.score-badge.new {
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+    border: 1px solid #f0d090;
+}
+
+/* --- СТИЛИ ДЛЯ ИНДЕКСА ВЫГОРАНИЯ (burnout-badge) --- */
+/* Высокий риск выгорания (70%+) - красный */
+.burnout-badge.burnout-high {
+    background: rgba(217, 83, 79, 0.15);
+    color: #d9534f;
+}
+
+/* Средний риск выгорания (40-69%) - жёлтый/оранжевый */
+.burnout-badge.burnout-medium {
+    background: rgba(240, 160, 80, 0.15);
+    color: #e0962e;
+}
+
+/* Низкий риск выгорания (до 39%) - зелёный */
+.burnout-badge.burnout-low {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+}
+
+/* --- СТИЛИ ДЛЯ ТРЕНДОВ --- */
 .trend-badge {
     display: inline-flex;
     align-items: center;
@@ -337,9 +375,19 @@ input.error, select.error { border-color: var(--color-error); }
     padding: 2px 8px;
     border-radius: 20px;
 }
-.trend-success { background: rgba(58, 171, 142, 0.15); color: var(--color-success); }
-.trend-error   { background: rgba(217, 83, 79, 0.15);  color: var(--color-error); }
-.trend-neutral { background: var(--color-bg-soft);     color: var(--color-text-soft); }
+.trend-success {
+    background: rgba(58, 171, 142, 0.15);
+    color: var(--color-success);
+}
+.trend-error {
+    background: rgba(217, 83, 79, 0.15);
+    color: var(--color-error);
+}
+.trend-neutral {
+    background: var(--color-bg-soft);
+    color: var(--color-text-soft);
+}
+
 
 /* ─────────────────────────────────────────────────────────────────────────────
    CALENDAR WIDGET

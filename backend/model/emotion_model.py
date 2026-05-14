@@ -154,7 +154,45 @@ def analyze_emotion(text: str, user_history: list = None) -> dict:
 
         print(f"[DEBUG] Raw scores: {scores}")
         scores = postprocess_sentiment_scores(scores)
-        print(f"[DEBUG] Post-processed scores: {scores}")
+        
+        text_lower = text.lower()
+
+        # Корни для проверки (охватывают все формы слов)
+        BURNOUT_ROOTS = ['выгор', 'безысход', 'вымота', 'сгор', 'ненавиж']
+
+        # Фразы с "не" (точное совпадение)
+        NEGATIVE_PHRASES = [
+            'не выспался', 'не выспалась', 'не выспались',
+            'не успеваю', 'не успел', 'не успела',
+            'не справляюсь', 'не справился', 'не справилась',
+            'не получается', 'не получилось',
+            'не могу', 'не мог', 'не смог',
+            'нет сил', 'нет времени',
+            'не хочу', 'не хотел',
+        ]
+
+        FATIGUE_ROOTS = ['уста', 'утом', 'раздража', 'надое', 'тяжел', 'аврал']
+
+        # Проверка фраз с "не"
+        has_negative_phrase = any(phrase in text_lower for phrase in NEGATIVE_PHRASES)
+
+        # Проверка корней
+        has_burnout_root = any(root in text_lower for root in BURNOUT_ROOTS)
+        has_fatigue_root = any(root in text_lower for root in FATIGUE_ROOTS)
+
+        if has_burnout_root or has_negative_phrase or has_fatigue_root:
+            # Сильное усиление негатива
+            scores['negative'] = min(scores.get('negative', 0) + 0.5, 0.95)
+            scores['positive'] = max(scores.get('positive', 0) - 0.3, 0.01)
+            scores['neutral'] = max(scores.get('neutral', 0) - 0.2, 0.01)
+        
+            # Перенормировка
+            total = scores['positive'] + scores['neutral'] + scores['negative']
+            if total > 0:
+                scores['positive'] /= total
+                scores['neutral'] /= total
+                scores['negative'] /= total
+        
 
         top_label = max(scores, key=scores.get)
         label_map = {
