@@ -57,12 +57,12 @@ logger.info("Загрузка модели %s...", EMOTION_MODEL_NAME)
 print(f"Загрузка модели {EMOTION_MODEL_NAME}...")
 
 classifier = pipeline(
-    "text-classification",
+    "sentiment-analysis",
     model=EMOTION_MODEL_NAME,
-    return_all_scores=True,
     device=EMOTION_MODEL_DEVICE,
+    top_k=None,
+    # return_all_scores=True,
 )
-
 print("Модель загружена.")
 
 
@@ -70,28 +70,51 @@ print("Модель загружена.")
 # Вспомогательные функции
 # ---------------------------------------------------------------------------
 
-def _parse_scores(raw_output) -> dict[str, float]:
-    """
-    Приводит сырой вывод pipeline к словарю {positive, neutral, negative}.
-    Нормализует метки через _LABEL_MAP и обеспечивает наличие всех трёх ключей.
-    """
-    scores: dict[str, float] = {"positive": 0.0, "neutral": 0.0, "negative": 0.0}
+def _parse_scores(raw_output) -> dict:
+    scores = {
+        "positive": 0.0,
+        "neutral": 0.0,
+        "negative": 0.0,
+    }
 
     try:
-        items = raw_output[0] if isinstance(raw_output[0], list) else raw_output
-        for item in items:
-            raw_label: str = item.get("label", "")
-            score: float = float(item.get("score", 0.0))
-            key = _LABEL_MAP.get(raw_label) or _LABEL_MAP.get(raw_label.upper())
-            if key:
-                scores[key] = round(score, 4)
-    except Exception as exc:
-        logger.warning("Ошибка разбора вывода модели: %s", exc)
+        # Если nested list
+        if (
+            isinstance(raw_output, list)
+            and len(raw_output) > 0
+            and isinstance(raw_output[0], list)
+        ):
+            items = raw_output[0]
 
-    # Нормализуем на случай, если сумма != 1
-    total = sum(scores.values())
-    if total > 0:
-        scores = {k: round(v / total, 4) for k, v in scores.items()}
+        # Если обычный list[dict]
+        else:
+            items = raw_output
+
+        for item in items:
+            raw_label = str(item.get("label", ""))
+            label = _LABEL_MAP.get(raw_label, raw_label.lower())
+            score = float(item.get("score", 0.0))
+
+            if "positive" in label:
+                scores["positive"] = score
+
+            elif "neutral" in label:
+                scores["neutral"] = score
+
+            elif "negative" in label:
+                scores["negative"] = score
+
+        total = sum(scores.values())
+
+        # Нормализация
+        if total > 0:
+            scores = {
+                k: round(v / total, 4)
+                for k, v in scores.items()
+            }
+
+    except Exception as e:
+        logger.warning(f"Ошибка парсинга scores: {e}")
 
     return scores
 
@@ -99,26 +122,35 @@ def _parse_scores(raw_output) -> dict[str, float]:
 def _detect_burnout_keywords(text: str) -> float:
     """
     Семантический компонент индекса выгорания.
-    Возвращает значение [0.0, 1.0] на основе ключевых слов из конфига.
+    Суммирует все найденные ключевые слова с насыщением.
     """
+    if not text:
+        return 0.0
+    
     text_lower = text.lower()
-    max_score = 0.0
+    total_score = 0.0
 
     weight_map = {
-        "high":   BURNOUT_WEIGHT_HIGH,
-        "medium": BURNOUT_WEIGHT_MEDIUM,
-        "low":    BURNOUT_WEIGHT_LOW,
+        "high":   BURNOUT_WEIGHT_HIGH,    # обычно 1.0
+        "medium": BURNOUT_WEIGHT_MEDIUM,  # обычно 0.7
+        "low":    BURNOUT_WEIGHT_LOW,     # обычно 0.4
     }
 
     for level, keywords in BURNOUT_KEYWORDS.items():
         weight = weight_map.get(level, 0.0)
+        found_count = 0
+        
         for kw in keywords:
-            if kw in text_lower:
-                count = text_lower.count(kw)
-                score = weight * min(1.0, count / 2.0)
-                max_score = max(max_score, score)
+            count = text_lower.count(kw)
+            if count > 0:
+                found_count += count
+                # Каждое найденное слово добавляет часть веса
+                total_score += weight * min(1.0, count * 0.7)   # 0.7 — коэффициент насыщения
 
-    return round(max_score, 4)
+    # Ограничение сверху + небольшое смягчение
+    semantic = min(1.0, total_score * 0.85)   # 0.85 — чтобы не перелетало в 1.0 слишком легко
+    
+    return round(semantic, 4)
 
 
 def _calculate_burnout(
@@ -128,15 +160,15 @@ def _calculate_burnout(
 ) -> dict:
     """
     Многофакторный расчёт индекса выгорания:
-      - 60% эмоциональный компонент (из оценок модели)
+      - 60% эмоциональный компонент
       - 20% семантический компонент (ключевые слова)
-      - 20% исторический компонент (средний burnout из истории)
+      - 20% исторический компонент
     """
     positive = scores.get("positive", 0.0)
     negative = scores.get("negative", 0.0)
+    # neutral = scores.get("neutral", 0.0)   # пока не используем
 
-    # Эмоциональный компонент: чем выше негатив и ниже позитив — тем выше выгорание
-    emotional = round(negative * 0.7 + (1.0 - positive) * 0.3, 4)
+    emotional = round(negative * 0.75 + (1.0 - positive) * 0.25, 4)
 
     # Семантический компонент
     semantic = _detect_burnout_keywords(text)
@@ -160,11 +192,10 @@ def _calculate_burnout(
     risk_level = _burnout_risk_level(burnout_index)
     return {"burnout_index": burnout_index, "risk_level": risk_level}
 
-
 def _historical_burnout(user_history: Optional[list[dict]]) -> float:
     """Средний индекс выгорания из последних отчётов пользователя."""
     if not user_history:
-        return 0.5  # нет истории — нейтральное значение
+        return 0.0  
 
     values = [
         r["burnout_index"]
@@ -172,7 +203,7 @@ def _historical_burnout(user_history: Optional[list[dict]]) -> float:
         if r.get("burnout_index") is not None
     ]
     if not values:
-        return 0.5
+        return 0.0
 
     return round(sum(values) / len(values), 4)
 
@@ -223,8 +254,9 @@ def analyze_emotion(text: str, user_history: Optional[list[dict]] = None) -> dic
         return _default_neutral()
 
     try:
+        model_input = text.strip()
+        raw_output = classifier(model_input[:EMOTION_MODEL_MAX_LENGTH])
         cleaned = preprocess_for_model(text)
-        raw_output = classifier(cleaned[:EMOTION_MODEL_MAX_LENGTH])
         scores = _parse_scores(raw_output)
 
         top_label = max(scores, key=scores.get)
