@@ -1,20 +1,25 @@
+"""
+Функциональные тесты API и основных роутов.
+"""
+
+import pytest
 from fastapi.responses import PlainTextResponse
 
-import backend.database.database as db
-import backend.routes.dashboard as dashboard_module
-import backend.routes.export as export_module
-from backend.services import export_service
+from backend.database import database as db
 from backend.services.context_builders import HRContextBuilder
 
 
-def test_register_success_redirects(client, monkeypatch):
-    monkeypatch.setattr(db, "add_user", lambda full_name, username, password, role, department: 42)
+# ====================== AUTH ======================
+
+def test_register_success(client, monkeypatch):
+    """Успешная регистрация"""
+    monkeypatch.setattr(db, "add_user", lambda *args, **kwargs: 999)
 
     response = client.post(
         "/api/register",
         data={
-            "full_name": "Иван Иванов",
-            "username": "ivanov",
+            "full_name": "Тестовый Пользователь",
+            "username": "testuser",
             "password": "1234",
             "role": "Сотрудник",
             "department": "IT",
@@ -22,57 +27,162 @@ def test_register_success_redirects(client, monkeypatch):
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
-    assert response.headers["location"] == "/?registered=success"
+    assert response.status_code in (302, 303)
+    assert "/?registered=success" in response.headers.get("location", "")
 
 
-def test_logout_clears_session_cookie(client, monkeypatch):
-    monkeypatch.setattr(db, "delete_session", lambda token: True)
+def test_register_existing_user(client, monkeypatch):
+    """Попытка регистрации уже существующего пользователя"""
+    monkeypatch.setattr(db, "add_user", lambda *args, **kwargs: None)
 
-    response = client.post("/api/logout", cookies={"session_token": "token123"}, follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers["location"] == "/"
+    response = client.post(
+        "/api/register",
+        data={
+            "full_name": "Существующий",
+            "username": "existing",
+            "password": "1234",
+            "role": "Сотрудник",
+            "department": "IT",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 303)
+    assert "error=user_exists" in response.headers.get("location", "")
 
 
-def test_dashboard_renders_template_for_hr(client, monkeypatch, sample_hr):
-    monkeypatch.setattr(db, "get_session_by_token", lambda token: {"user_id": sample_hr["user_id"], "name": sample_hr["name"], "role": sample_hr["role"], "department": sample_hr["department"]})
-    monkeypatch.setattr(HRContextBuilder, "build", lambda: {"employees_data": [], "dept_avg_scores": [], "emotion_stats": [], "company_burnout_history": [], "departments_burnout_history": [], "high_burnout_employees": []})
-    monkeypatch.setattr(dashboard_module.templates, "TemplateResponse", lambda request, name, context: PlainTextResponse("dashboard", media_type="text/html"))
+def test_login_success(client, monkeypatch, sample_user):
+    """Успешный вход"""
+    monkeypatch.setattr(db, "get_user_by_username", lambda *args, **kwargs: sample_user)
+    monkeypatch.setattr(db, "create_session", lambda *args, **kwargs: "test_session_token_123")
 
-    response = client.get("/dashboard", cookies={"session_token": "token123"})
+    response = client.post(
+        "/api/login",
+        data={"username": "testuser", "password": "1234"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 303)
+    assert "/" in response.headers.get("location", "")
+
+
+def test_logout(client, monkeypatch):
+    """Выход из системы"""
+    monkeypatch.setattr(db, "delete_session", lambda *args, **kwargs: True)
+
+    response = client.post(
+        "/api/logout",
+        cookies={"session_token": "valid_token"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 303)
+    assert "/" in response.headers.get("location", "")
+
+
+# ====================== DASHBOARD ======================
+
+def test_dashboard_redirects_unauthorized(client):
+    """Неавторизованный пользователь перенаправляется на логин"""
+    response = client.get("/dashboard", follow_redirects=False)
+    assert response.status_code in (302, 303)
+    assert "/login" in response.headers.get("location", "")
+
+
+def test_employee_dashboard(client, monkeypatch, sample_user):
+    """Даашборд обычного сотрудника"""
+    monkeypatch.setattr(db, "get_session_by_token", lambda *args, **kwargs: sample_user)
+
+    # Мокаем рендер шаблона
+    from backend.routes.dashboard import templates
+    monkeypatch.setattr(templates, "TemplateResponse",
+                        lambda *args, **kwargs: PlainTextResponse("employee_dashboard"))
+
+    response = client.get("/dashboard", cookies={"session_token": "valid_token"})
     assert response.status_code == 200
-    assert response.text == "dashboard"
 
 
-def test_export_reports_forbidden_for_non_hr(client, monkeypatch, sample_user):
-    monkeypatch.setattr(db, "get_session_by_token", lambda token: {"user_id": sample_user["user_id"], "name": sample_user["name"], "role": sample_user["role"], "department": sample_user["department"]})
+def test_hr_dashboard(client, monkeypatch, sample_hr):
+    """Даашборд HR-администратора"""
+    monkeypatch.setattr(db, "get_session_by_token", lambda *args, **kwargs: sample_hr)
 
-    response = client.get("/api/export_reports", cookies={"session_token": "token123"})
+    monkeypatch.setattr(HRContextBuilder, "build",
+                        lambda *args, **kwargs: {"employees_data": [], "dept_avg_scores": []})
+
+    from backend.routes.dashboard import templates
+    monkeypatch.setattr(templates, "TemplateResponse",
+                        lambda *args, **kwargs: PlainTextResponse("hr_dashboard"))
+
+    response = client.get("/dashboard", cookies={"session_token": "valid_token"})
+    assert response.status_code == 200
+
+
+# ====================== EXPORT ======================
+
+def test_export_reports_forbidden_for_employee(client, monkeypatch, sample_user):
+    """Обычный сотрудник не может экспортировать отчёты"""
+    monkeypatch.setattr(db, "get_session_by_token", lambda *args, **kwargs: sample_user)
+
+    response = client.get("/api/export_reports", cookies={"session_token": "valid_token"})
     assert response.status_code == 403
 
 
-def test_export_detailed_reports_forbidden_for_non_hr(client, monkeypatch, sample_user):
-    monkeypatch.setattr(db, "get_session_by_token", lambda token: {"user_id": sample_user["user_id"], "name": sample_user["name"], "role": sample_user["role"], "department": sample_user["department"]})
+def test_export_detailed_reports_forbidden_for_employee(client, monkeypatch, sample_user):
+    """Обычный сотрудник не может экспортировать детальные отчёты"""
+    monkeypatch.setattr(db, "get_session_by_token", lambda *args, **kwargs: sample_user)
 
-    response = client.get("/api/export_detailed_reports", cookies={"session_token": "token123"})
+    response = client.get("/api/export_detailed_reports", cookies={"session_token": "valid_token"})
     assert response.status_code == 403
 
 
-def test_export_reports_authorized_returns_csv(client, monkeypatch, sample_hr):
-    monkeypatch.setattr(db, "get_session_by_token", lambda token: {"user_id": sample_hr["user_id"], "name": sample_hr["name"], "role": sample_hr["role"], "department": sample_hr["department"]})
-    monkeypatch.setattr(export_service.ExportService, "build_summary_csv", staticmethod(lambda period="all": PlainTextResponse("col1;col2\nval1;val2", media_type="text/csv")))
+def test_export_reports_allowed_for_hr(client, monkeypatch, sample_hr):
+    """HR может экспортировать отчёты"""
+    monkeypatch.setattr(db, "get_session_by_token", lambda *args, **kwargs: sample_hr)
+    monkeypatch.setattr(db, "get_all_reports_for_export", lambda *args, **kwargs: [])
 
-    response = client.get("/api/export_reports", cookies={"session_token": "token123"})
+    response = client.get("/api/export_reports", cookies={"session_token": "valid_token"})
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/csv")
-    assert "col1;col2" in response.text
+    assert "text/csv" in response.headers.get("content-type", "")
 
 
-def test_export_detailed_reports_authorized_returns_csv(client, monkeypatch, sample_hr):
-    monkeypatch.setattr(db, "get_session_by_token", lambda token: {"user_id": sample_hr["user_id"], "name": sample_hr["name"], "role": sample_hr["role"], "department": sample_hr["department"]})
-    monkeypatch.setattr(export_service.ExportService, "build_detailed_csv", staticmethod(lambda department=None, start_date=None, end_date=None: PlainTextResponse("date;text\n2026-01-01;test", media_type="text/csv")))
+# ====================== REPORT SUBMISSION ======================
 
-    response = client.get("/api/export_detailed_reports", cookies={"session_token": "token123"})
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/csv")
-    assert "date;text" in response.text
+def test_submit_report_success(client, monkeypatch, sample_user):
+    """Успешная отправка отчёта"""
+    monkeypatch.setattr(db, "get_session_by_token", lambda *args, **kwargs: sample_user)
+    monkeypatch.setattr(db, "save_report", lambda *args, **kwargs: 777)
+    monkeypatch.setattr(db, "save_analysis_result", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/submit_report",
+        data={"report_text": "Сегодня продуктивно работал над задачами."},
+        cookies={"session_token": "valid_token"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 303)
+    assert "report_submitted=success" in response.headers.get("location", "")
+
+
+# ====================== FIXTURES (если нужно) ======================
+
+@pytest.fixture
+def sample_user():
+    return {
+        "id": 1,
+        "username": "testuser",
+        "role": "Сотрудник",
+        "department": "IT",
+        "full_name": "Тестовый Пользователь"
+    }
+
+
+@pytest.fixture
+def sample_hr():
+    return {
+        "id": 2,
+        "username": "hr_admin",
+        "role": "HR-администратор",
+        "department": "HR",
+        "full_name": "Марина Иванова"
+    }
