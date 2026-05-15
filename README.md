@@ -1,115 +1,57 @@
 # Emotion Analysis System
 
-Платформа для оценки эмоционального состояния сотрудников на основе анализа текстовых отчётов (RuBERT).
+**Платформа для анализа эмоционального состояния сотрудников** на основе текстовых ежедневных отчётов с помощью RuBERT.
 
 ---
 
-## Стек
+## Стек технологий
 
-| Компонент | Технология |
-|---|---|
-| Backend | FastAPI + Uvicorn |
-| ML-модель | `blanchefort/rubert-base-cased-sentiment` (HuggingFace) |
-| БД | PostgreSQL (psycopg2, connection pool) |
-| Шаблоны | Jinja2 |
-| Фронтенд | Vanilla JS + Chart.js + Flatpickr + Lucide |
-| Контейнер | Docker |
+| Компонент       | Технология                                      |
+|-----------------|-------------------------------------------------|
+| Backend         | FastAPI + Uvicorn                               |
+| ML-модель       | MonoHime/rubert-base-cased-sentiment-new (Hugging Face) |
+| База данных     | PostgreSQL + psycopg2 (connection pool)         |
+| Шаблоны         | Jinja2                                          |
+| Frontend        | Vanilla JS + Chart.js + Flatpickr + Lucide Icons |
+| Контейнеризация | Docker                                          |
 
 ---
 
 ## Роли пользователей
 
-- **Сотрудник** — пишет ежедневные отчёты, видит свою аналитику и риск выгорания
-- **Руководитель** — видит состояние своего отдела, аналитику команды (без текстов отчётов)
-- **HR-администратор** — полная аналитика по компании, экспорт данных в CSV
+- **Сотрудник** — пишет ежедневные отчёты, видит свою личную аналитику и уровень риска выгорания.
+- **Руководитель** — видит сводку по своему отделу и команде (без доступа к текстам отчётов).
+- **HR-администратор** — полная аналитика по всей компании + экспорт данных в CSV.
 
 ---
 
 ## Структура проекта
 
-```
+```bash
 backend/
-├── config.py                  # Константы и переменные окружения
-├── main.py                    # Точка входа (только init + роутеры)
+├── config.py                  # Все настройки и константы
+├── main.py                    # Точка входа FastAPI
 ├── database/
-│   └── database.py            # DAL: все SQL-запросы
+│   └── database.py            # DAL (все запросы к БД)
 ├── model/
-│   ├── emotion_model.py       # ML-модель RuBERT + расчёт выгорания
-│   └── text_preprocessor.py  # Предобработка текста
+│   ├── emotion_model.py       # Загрузка и работа с RuBERT + расчёт выгорания
+│   └── text_preprocessor.py   # Предобработка текста
 ├── routes/
-│   ├── auth.py                # /  /register  /api/login  /api/logout  /api/register
-│   ├── dashboard.py           # /dashboard (роутинг по ролям)
-│   ├── api.py                 # /api/analyze  /api/team_analytics
-│   ├── export.py              # /api/export_reports  /api/export_detailed_reports
-│   └── deps.py                # Dependency: get_current_user
+│   ├── auth.py                # Авторизация и регистрация
+│   ├── dashboard.py           # Главная страница (роутинг по ролям)
+│   ├── api.py                 # API-эндпоинты анализа
+│   ├── export.py              # Экспорт отчётов
+│   └── deps.py                # Зависимости (get_current_user)
 ├── services/
-│   ├── emotion_service.py     # Анализ + сохранение в БД
-│   ├── export_service.py      # Генерация CSV-файлов
-│   └── context_builders.py   # Контекст для Jinja2-шаблонов (по ролям)
-├── schemas/
-│   └── __init__.py            # Pydantic-модели валидации
-└── utils/
-    ├── formatting.py          # safe_timestamp, format_date_short
-    └── keywords.py            # extract_keywords
-
-templates/                     # Jinja2 HTML-шаблоны
+│   ├── emotion_service.py     # Основная бизнес-логика анализа
+│   ├── export_service.py      # Генерация CSV
+│   └── context_builders.py    # Контекст для Jinja2-шаблонов
+├── schemas/                   # Pydantic-модели
+├── utils/
+│   ├── formatting.py          # Форматирование дат и т.д.
+│   └── keywords.py            # Работа с ключевыми словами
+├── __init__.py
+│
+templates/                     # HTML-шаблоны Jinja2
 static/css/                    # Стили
-```
-
----
-
-## Быстрый старт
-
-### 1. Переменные окружения
-
-Создайте файл `.env` в корне проекта:
-
-```env
-DATABASE_URL=postgresql://user:password@localhost:5432/emotion_db
-```
-
-### 2. Установка зависимостей
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Запуск
-
-```bash
-python -m uvicorn backend.main:app --reload
-```
-
-### 4. Docker
-
-```bash
-docker build -t emotion-app .
-docker run -p 8000:8000 --env-file .env emotion-app
-```
-
----
-
-## Алгоритм расчёта выгорания
-
-Индекс выгорания рассчитывается по трём факторам:
-
-| Фактор | Вес | Описание |
-|---|---|---|
-| Эмоциональный | 60% | На основе вероятностей positive/negative от RuBERT |
-| Семантический | 20% | Наличие ключевых слов-маркеров (устал, выгорел и т.д.) |
-| Исторический | 20% | Средний burnout из последних 5 отчётов |
-
-Пороги риска: `minimal < 0.1 < low < 0.3 < medium < 0.5 < high < 0.7 < critical`
-
----
-
-## Конфигурация
-
-Все настройки централизованы в `backend/config.py`:
-
-- `BURNOUT_KEYWORDS` — маркеры выгорания по уровням тяжести
-- `BURNOUT_RISK_THRESHOLDS` — пороги уровней риска
-- `SCORE_DECAY_FACTOR` — коэффициент затухания для взвешенного балла
-- `EMOTION_MODEL_NAME` — название HuggingFace-модели
-- `SESSION_DAYS` — срок жизни сессии
-- `REPORT_MIN_LENGTH` — минимальная длина отчёта
+tests/                         # Тесты
