@@ -1,8 +1,8 @@
 """
-Модуль анализа эмоций на основе RuBERT.
+Модуль анализа эмоций на основе RuBERT + контекстная постобработка.
 Модель: MonoHime/rubert-base-cased-sentiment-new
-Метки модели: POSITIVE, NEUTRAL, NEGATIVE
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,24 +21,41 @@ from backend.config import (
     EMOTION_MODEL_NAME,
     EMOTION_MODEL_MAX_LENGTH,
     EMOTION_MODEL_DEVICE,
+    # Новые константы для контекстной коррекции
+    POSITIVE_SUCCESS_MARKERS,
+    NEGATIVE_CONTEXT_MARKERS,
+    CONTEXT_BOOST_POSITIVE,
+    CONTEXT_BOOST_NEGATIVE,
 )
 from backend.model.text_preprocessor import preprocess_for_model
 
 logger = logging.getLogger(__name__)
 
+# --------------------------------------------------------------------------- 
+# Загрузка модели
 # ---------------------------------------------------------------------------
-# Маппинг меток модели → внутренние ключи
-# Модель MonoHime/rubert-base-cased-sentiment-new возвращает POSITIVE/NEUTRAL/NEGATIVE
+logger.info("Загрузка модели %s...", EMOTION_MODEL_NAME)
+print(f"Загрузка модели {EMOTION_MODEL_NAME}...")
+
+classifier = pipeline(
+    "sentiment-analysis",
+    model=EMOTION_MODEL_NAME,
+    device=EMOTION_MODEL_DEVICE,
+    top_k=None,
+)
+
+print("Модель успешно загружена.")
+
+# --------------------------------------------------------------------------- 
+# Маппинги
 # ---------------------------------------------------------------------------
 _LABEL_MAP: dict[str, str] = {
     "positive": "positive",
     "neutral":  "neutral",
     "negative": "negative",
-    # на случай если модель вернёт верхний регистр
     "POSITIVE": "positive",
     "NEUTRAL":  "neutral",
     "NEGATIVE": "negative",
-    # label_0 / label_1 / label_2 — запасной вариант для некоторых чекпоинтов
     "label_0":  "negative",
     "label_1":  "neutral",
     "label_2":  "positive",
@@ -50,27 +67,13 @@ _DISPLAY_LABELS: dict[str, str] = {
     "negative": "Негативное состояние",
 }
 
-# ---------------------------------------------------------------------------
-# Загрузка модели
-# ---------------------------------------------------------------------------
-logger.info("Загрузка модели %s...", EMOTION_MODEL_NAME)
-print(f"Загрузка модели {EMOTION_MODEL_NAME}...")
 
-classifier = pipeline(
-    "sentiment-analysis",
-    model=EMOTION_MODEL_NAME,
-    device=EMOTION_MODEL_DEVICE,
-    top_k=None,
-    # return_all_scores=True,
-)
-print("Модель загружена.")
-
-
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- 
 # Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 def _parse_scores(raw_output) -> dict:
+    """Парсит выход модели RuBERT"""
     scores = {
         "positive": 0.0,
         "neutral": 0.0,
@@ -78,40 +81,28 @@ def _parse_scores(raw_output) -> dict:
     }
 
     try:
-        # Если nested list
-        if (
-            isinstance(raw_output, list)
-            and len(raw_output) > 0
-            and isinstance(raw_output[0], list)
-        ):
+        # Обработка разных форматов вывода
+        if isinstance(raw_output, list) and len(raw_output) > 0 and isinstance(raw_output[0], list):
             items = raw_output[0]
-
-        # Если обычный list[dict]
         else:
             items = raw_output
 
         for item in items:
-            raw_label = str(item.get("label", ""))
-            label = _LABEL_MAP.get(raw_label, raw_label.lower())
+            raw_label = str(item.get("label", "")).lower()
+            label = _LABEL_MAP.get(raw_label, raw_label)
             score = float(item.get("score", 0.0))
 
             if "positive" in label:
                 scores["positive"] = score
-
             elif "neutral" in label:
                 scores["neutral"] = score
-
             elif "negative" in label:
                 scores["negative"] = score
 
-        total = sum(scores.values())
-
         # Нормализация
+        total = sum(scores.values())
         if total > 0:
-            scores = {
-                k: round(v / total, 4)
-                for k, v in scores.items()
-            }
+            scores = {k: round(v / total, 4) for k, v in scores.items()}
 
     except Exception as e:
         logger.warning(f"Ошибка парсинга scores: {e}")
@@ -119,11 +110,58 @@ def _parse_scores(raw_output) -> dict:
     return scores
 
 
+def _detect_markers(text: str, markers_dict: dict) -> float:
+    """Определяет силу присутствия маркеров успеха/негатива"""
+    if not text:
+        return 0.0
+    
+    text_lower = text.lower()
+    score = 0.0
+
+    for level, keywords in markers_dict.items():
+        weight = 1.0 if level == "strong" else 0.65
+        for kw in keywords:
+            count = text_lower.count(kw)
+            if count > 0:
+                score += weight * min(1.0, count * 0.75)
+    
+    return min(1.0, score * 0.85)
+
+
+def _apply_context_correction(scores: dict, text: str) -> tuple[dict, dict]:
+    """
+    Контекстная коррекция результата модели
+    """
+    original_pos = scores.get("positive", 0.0)
+    original_neg = scores.get("negative", 0.0)
+
+    pos_boost = _detect_markers(text, POSITIVE_SUCCESS_MARKERS)
+    neg_boost = _detect_markers(text, NEGATIVE_CONTEXT_MARKERS)
+
+    corrected = scores.copy()
+
+    if pos_boost > 0.1:
+        corrected["positive"] = min(1.0, original_pos + pos_boost * CONTEXT_BOOST_POSITIVE)
+    
+    if neg_boost > 0.1:
+        corrected["negative"] = min(1.0, original_neg + neg_boost * CONTEXT_BOOST_NEGATIVE)
+
+    # Нормализация после коррекции
+    total = sum(corrected.values())
+    if total > 0:
+        corrected = {k: round(v / total, 4) for k, v in corrected.items()}
+
+    correction_info = {
+        "pos_boost": round(pos_boost, 3),
+        "neg_boost": round(neg_boost, 3),
+        "was_corrected": pos_boost > 0.1 or neg_boost > 0.1
+    }
+
+    return corrected, correction_info
+
+
 def _detect_burnout_keywords(text: str) -> float:
-    """
-    Семантический компонент индекса выгорания.
-    Суммирует все найденные ключевые слова с насыщением.
-    """
+    """Семантический компонент выгорания"""
     if not text:
         return 0.0
     
@@ -131,25 +169,19 @@ def _detect_burnout_keywords(text: str) -> float:
     total_score = 0.0
 
     weight_map = {
-        "high":   BURNOUT_WEIGHT_HIGH,    # обычно 1.0
-        "medium": BURNOUT_WEIGHT_MEDIUM,  # обычно 0.7
-        "low":    BURNOUT_WEIGHT_LOW,     # обычно 0.4
+        "high": BURNOUT_WEIGHT_HIGH,
+        "medium": BURNOUT_WEIGHT_MEDIUM,
+        "low": BURNOUT_WEIGHT_LOW,
     }
 
     for level, keywords in BURNOUT_KEYWORDS.items():
         weight = weight_map.get(level, 0.0)
-        found_count = 0
-        
         for kw in keywords:
             count = text_lower.count(kw)
             if count > 0:
-                found_count += count
-                # Каждое найденное слово добавляет часть веса
-                total_score += weight * min(1.0, count * 0.7)   # 0.7 — коэффициент насыщения
+                total_score += weight * min(1.0, count * 0.7)
 
-    # Ограничение сверху + небольшое смягчение
-    semantic = min(1.0, total_score * 0.85)   # 0.85 — чтобы не перелетало в 1.0 слишком легко
-    
+    semantic = min(1.0, total_score * 0.85)
     return round(semantic, 4)
 
 
@@ -158,54 +190,37 @@ def _calculate_burnout(
     text: str,
     user_history: Optional[list[dict]],
 ) -> dict:
-    """
-    Многофакторный расчёт индекса выгорания:
-      - 60% эмоциональный компонент
-      - 20% семантический компонент (ключевые слова)
-      - 20% исторический компонент
-    """
+    """Расчёт индекса выгорания"""
     positive = scores.get("positive", 0.0)
     negative = scores.get("negative", 0.0)
-    # neutral = scores.get("neutral", 0.0)   # пока не используем
 
     emotional = round(negative * 0.75 + (1.0 - positive) * 0.25, 4)
-
-    # Семантический компонент
     semantic = _detect_burnout_keywords(text)
-
-    # Исторический компонент
     historical = _historical_burnout(user_history)
 
     burnout_index = round(
         min(
             max(
-                emotional * BURNOUT_FACTOR_EMOTIONAL
-                + semantic * BURNOUT_FACTOR_SEMANTIC
-                + historical * BURNOUT_FACTOR_HISTORICAL,
-                0.0,
+                emotional * BURNOUT_FACTOR_EMOTIONAL +
+                semantic * BURNOUT_FACTOR_SEMANTIC +
+                historical * BURNOUT_FACTOR_HISTORICAL,
+                0.0
             ),
-            1.0,
+            1.0
         ),
-        4,
+        4
     )
 
     risk_level = _burnout_risk_level(burnout_index)
     return {"burnout_index": burnout_index, "risk_level": risk_level}
 
-def _historical_burnout(user_history: Optional[list[dict]]) -> float:
-    """Средний индекс выгорания из последних отчётов пользователя."""
-    if not user_history:
-        return 0.0  
 
-    values = [
-        r["burnout_index"]
-        for r in user_history
-        if r.get("burnout_index") is not None
-    ]
-    if not values:
+def _historical_burnout(user_history: Optional[list[dict]]) -> float:
+    if not user_history:
         return 0.0
 
-    return round(sum(values) / len(values), 4)
+    values = [r["burnout_index"] for r in user_history if r.get("burnout_index") is not None]
+    return round(sum(values) / len(values), 4) if values else 0.0
 
 
 def _burnout_risk_level(index: float) -> str:
@@ -220,79 +235,78 @@ def _burnout_risk_level(index: float) -> str:
 
 def _default_neutral() -> dict:
     return {
-        "label":         "neutral",
+        "label": "neutral",
         "display_label": "Нейтральное состояние",
-        "score":         0.50,
-        "all_scores":    {"positive": 0.33, "neutral": 0.40, "negative": 0.27},
+        "score": 0.50,
+        "all_scores": {"positive": 0.33, "neutral": 0.40, "negative": 0.27},
         "burnout_index": 0.35,
-        "burnout_risk":  "medium",
+        "burnout_risk": "medium",
     }
 
 
-# ---------------------------------------------------------------------------
-# Публичный API
+# --------------------------------------------------------------------------- 
+# Основная функция
 # ---------------------------------------------------------------------------
 
 def analyze_emotion(text: str, user_history: Optional[list[dict]] = None) -> dict:
     """
-    Анализирует эмоциональное состояние по тексту.
-
-    Args:
-        text: текст отчёта сотрудника
-        user_history: список предыдущих отчётов (для исторического компонента выгорания)
-
-    Returns:
-        Словарь с ключами:
-            label         — внутренний ключ (positive / neutral / negative)
-            display_label — отображаемое название на русском
-            score         — уверенность модели в топ-метке [0, 1]
-            all_scores    — словарь вероятностей по всем трём классам
-            burnout_index — индекс выгорания [0, 1]
-            burnout_risk  — уровень риска (low / medium / high / critical)
+    Главная функция анализа эмоций с контекстной коррекцией.
     """
     if not text or len(text.strip()) < 15:
         return _default_neutral()
 
     try:
-        model_input = text.strip()
-        raw_output = classifier(model_input[:EMOTION_MODEL_MAX_LENGTH])
-        cleaned = preprocess_for_model(text)
+        cleaned_text = preprocess_for_model(text)
+        raw_output = classifier(text[:EMOTION_MODEL_MAX_LENGTH])
+        
         scores = _parse_scores(raw_output)
+        
+        # Применяем контекстную коррекцию
+        scores, correction = _apply_context_correction(scores, cleaned_text)
 
         top_label = max(scores, key=scores.get)
-        burnout_result = _calculate_burnout(scores, cleaned, user_history)
 
-        return {
-            "label":         top_label,
+        burnout_result = _calculate_burnout(scores, cleaned_text, user_history)
+
+        result = {
+            "label": top_label,
             "display_label": _DISPLAY_LABELS.get(top_label, "Нейтральное состояние"),
-            "score":         scores[top_label],
-            "all_scores":    scores,
+            "score": scores[top_label],
+            "all_scores": scores,
             "burnout_index": burnout_result["burnout_index"],
-            "burnout_risk":  burnout_result["risk_level"],
+            "burnout_risk": burnout_result["risk_level"],
+            "correction": correction,
         }
+
+        # Логируем значимые коррекции
+        if correction["was_corrected"]:
+            logger.info(
+                f"Контекстная коррекция: +pos={correction['pos_boost']}, "
+                f"+neg={correction['neg_boost']} | {text[:70]}..."
+            )
+
+        return result
 
     except Exception as exc:
         logger.error("Ошибка анализа эмоций: %s", exc)
         return _default_neutral()
 
 
-# ---------------------------------------------------------------------------
-# Ручная проверка при запуске напрямую
+# --------------------------------------------------------------------------- 
+# Тест при прямом запуске
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    _test_texts = [
-        "Месяц закрыт. План 100%.",
-        "Усталость накапливается. Сил уже нет.",
+    test_texts = [
         "Отличный день! Закрыл крупную сделку.",
-        "Рутина забирает много времени.",
-        "Ненавижу эту работу. Хочу уволиться.",
-        "Ничего особенного. Сделал текучку, ответил на письма. К вечеру устала, но в целом нормально.",
-        "Замечательный день! Закрыл сделку на 1 200 000 ₽.",
+        "Сил нет. Постоянные дедлайны выматывают.",
+        "Хочу уволиться, все не нравится.",
+        "Обычный день. Задачи выполнил.",
+        "Прорыв! Перевыполнил план на 30%.",
+        "Не могу больше. Всё валится из рук.",
     ]
-    for t in _test_texts:
+
+    for t in test_texts:
         res = analyze_emotion(t)
-        print(
-            f"\nТекст: {t[:80]}\n"
-            f"→ {res['display_label']} ({res['score']:.3f}) | "
-            f"Выгорание: {res['burnout_index']:.3f} [{res['burnout_risk']}]"
-        )
+        print(f"\nТекст: {t[:80]}...")
+        print(f"→ {res['display_label']} ({res['score']:.3f}) | "
+              f"Выгорание: {res['burnout_index']:.3f} [{res['burnout_risk']}]")
