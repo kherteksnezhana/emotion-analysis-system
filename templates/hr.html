@@ -216,7 +216,7 @@ function renderEmployeeList(containerId, employees) {
     if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
-// Отрисовка объединенной вкладки "Требуют внимания"
+// Отрисовка объединенной вкладки "Обратите внимание"
 function renderAttentionTab() {
     let filtered = currentDepartment === 'all'
         ? [...allEmployees]
@@ -473,7 +473,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <i data-lucide="eye" style="width:18px;height:18px;margin-right:8px;"></i>Обзор
             </button>
             <button class="tab-link" onclick="switchHRTab('attention', event)">
-                <i data-lucide="alert-triangle" style="width:18px;height:18px;margin-right:8px;"></i>Требуют внимания
+                <i data-lucide="alert-triangle" style="width:18px;height:18px;margin-right:8px;"></i>Обратите внимание
             </button>
             <button class="tab-link" onclick="switchHRTab('best', event)">
                 <i data-lucide="star" style="width:18px;height:18px;margin-right:8px;"></i>Лучшие
@@ -530,7 +530,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <h3 class="section-title">Ключевые показатели</h3>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px;">
                             <div>
-                                <span class="stat-label" data-tooltip="Сотрудники с показателем ниже 60% или высоким выгоранием">Требуют внимания</span>
+                                <span class="stat-label" data-tooltip="Сотрудники с показателем ниже 60% или высоким выгоранием">Обратите внимание</span>
                                 <div class="stat-number" style="font-size:28px;">{{ need_attention_count }}</div>
                             </div>
                             <div>
@@ -583,7 +583,7 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
         </div>
 
-        <!-- ═══ ТРЕБУЮТ ВНИМАНИЯ (объединено выгорание + низкий балл) ═══ -->
+        <!-- ═══ ОБРАТИТЕ ВНИМАНИЕ (объединено выгорание + низкий балл) ═══ -->
         <div id="tab-attention" class="tab-content">
             <div class="card">
                 <div id="attentionCombinedContainer"></div>
@@ -625,7 +625,7 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
             <div class="card stat-card">
                 <i data-lucide="alert-triangle" style="width:18px;height:18px;"></i>
-                <span class="stat-label">Требуют внимания</span>
+                <span class="stat-label">Обратите внимание</span>
                 <div class="stat-number">{{ need_attention_count }}</div>
                 <p class="info-note">{% if need_attention_count == 0 %}Все в норме{% else %}Требуется поддержка{% endif %}</p>
             </div>
