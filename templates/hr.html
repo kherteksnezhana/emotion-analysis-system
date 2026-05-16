@@ -145,7 +145,7 @@ function renderAllCharts() {
     renderBurnoutChart();
 }
 
-// ==================== РЕНДЕР СПИСКОВ ====================
+// ==================== РЕНДЕР СПИСКА ====================
 function renderEmployeeList(containerId, employees) {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -216,121 +216,27 @@ function renderEmployeeList(containerId, employees) {
     if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
-// Отрисовка объединенной вкладки "Обратите внимание"
-function renderAttentionTab() {
-    let filtered = currentDepartment === 'all'
-        ? [...allEmployees]
-        : allEmployees.filter(e => e.department === currentDepartment);
-
-    // Группа 1: Низкий показатель (< 60%) И есть отчёты
-    const lowScoreEmployees = filtered.filter(e => e.has_reports && e.last_score < 60);
-    // Группа 2: Высокий риск выгорания (id в highBurnoutIds) И НЕ попавшие в первую группу (чтобы избежать дублей)
-    const burnoutEmployees = filtered.filter(e => highBurnoutIds.has(e.id) && !lowScoreEmployees.some(le => le.id === e.id));
-
-    const container = document.getElementById('attentionCombinedContainer');
-    if (!container) return;
-
-    let html = '';
-
-    // Блок с низкими показателями
-    html += `<div style="margin-bottom:32px;">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
-            <i data-lucide="alert-triangle" style="width:22px;height:22px;color:var(--color-error);"></i>
-            <h3 class="section-title" style="margin-bottom:0;">Низкий моральный дух</h3>
-            <span class="info-note" style="background:var(--color-bg-soft);padding:2px 10px;border-radius:20px;">${lowScoreEmployees.length} чел.</span>
-        </div>
-        <p class="info-note" style="margin-bottom:16px;">Сотрудники с показателем ниже 60% — требуется поддержка и разговор.</p>
-        <div id="attentionLowScoreList"></div>
-    </div>`;
-
-    // Блок с высоким выгоранием
-    html += `<div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
-            <i data-lucide="zap" style="width:22px;height:22px;color:var(--color-warning);"></i>
-            <h3 class="section-title" style="margin-bottom:0;">Высокий риск выгорания</h3>
-            <span class="info-note" style="background:var(--color-bg-soft);padding:2px 10px;border-radius:20px;">${burnoutEmployees.length} чел.</span>
-        </div>
-        <p class="info-note" style="margin-bottom:16px;">Индекс выгорания выше 50% — возможна эмоциональная усталость.</p>
-        <div id="attentionBurnoutList"></div>
-    </div>`;
-
-    container.innerHTML = html;
-    if (typeof lucide !== 'undefined') lucide.createIcons();
-
-    // Рендерим списки внутри блоков
-    const lowScoreContainer = document.getElementById('attentionLowScoreList');
-    const burnoutContainer = document.getElementById('attentionBurnoutList');
-    renderEmployeeListIntoContainer(lowScoreContainer, lowScoreEmployees);
-    renderEmployeeListIntoContainer(burnoutContainer, burnoutEmployees);
-}
-
-function renderEmployeeListIntoContainer(container, employees) {
-    if (!container) return;
-    if (!employees?.length) {
-        container.innerHTML = '<div class="empty-state" style="padding:20px;"><p class="info-note">Нет сотрудников в этой категории</p></div>';
-        return;
-    }
-    container.innerHTML = employees.map(e => {
-        const avatarBg = getAvatarBg(e.id);
-        const trend    = e.score_trend || null;
-        const hasRep   = e.has_reports === true;
-        const burnoutP = e.last_burnout != null ? Math.round(e.last_burnout * 100) : 0;
-
-        let wellClass = 'medium';
-        if (e.last_score >= 80)      wellClass = 'high';
-        else if (e.last_score < 60)  wellClass = 'low';
-
-        let burnoutClass = 'burnout-medium';
-        if (burnoutP >= 70) {
-            burnoutClass = 'burnout-high';
-        } else if (burnoutP >= 40) {
-            burnoutClass = 'burnout-medium';
-        } else {
-            burnoutClass = 'burnout-low';
+// Получение списка для вкладки "Обратите внимание"
+function getAttentionEmployees(filtered) {
+    // Сотрудники с низким моральным духом (<60%) ИЛИ с высоким выгоранием (id в highBurnoutIds)
+    // Используем Set для устранения дублей
+    const attentionSet = new Set();
+    
+    // Добавляем с низким баллом
+    filtered.forEach(e => {
+        if (e.has_reports && e.last_score < 60) {
+            attentionSet.add(e);
         }
-
-        let wellIcon = 'meh';
-        if (e.last_score >= 80)      wellIcon = 'smile';
-        else if (e.last_score < 60)  wellIcon = 'frown';
-
-        return `
-        <div class="team-item" style="display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--color-line-solid);">
-            <div class="member-info" style="display:flex;align-items:center;gap:14px;">
-                <div class="employee-avatar" style="width:44px;height:44px;border-radius:12px;background-color:${avatarBg};font-size:18px;">
-                    ${esc((e.full_name || '?')[0])}
-                </div>
-                <div class="member-details">
-                    <strong>${esc(e.full_name)}</strong>
-                    <span class="info-note">${esc(e.department)}</span>
-                </div>
-            </div>
-            <div class="member-stats" style="text-align:right;">
-                <div class="member-stats-top" style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">
-                    ${!hasRep
-                        ? '<span class="score-badge new" data-tooltip="Нет отчётов">Новый</span>'
-                        : `<span class="score-badge ${wellClass}" data-tooltip="Взвешенный балл за всё время">
-                               <i data-lucide="${wellIcon}" style="width:14px;height:14px;margin-right:6px;"></i>
-                               ${Math.round(e.last_score)}%
-                           </span>`
-                    }
-                    ${hasRep && trend?.change
-                        ? `<span class="trend-badge trend-${trend.color}" data-tooltip="Изменение за последние 30 дней">
-                               ${trend.icon} ${Math.abs(trend.change)}%
-                           </span>`
-                        : ''
-                    }
-                    <span>|</span>
-                    <span class="burnout-badge ${burnoutClass}" data-tooltip="Индекс выгорания">
-                        <i data-lucide="zap" style="width:14px;height:14px;margin-right:4px;"></i>
-                        ${burnoutP}%
-                    </span>
-                </div>
-                <p class="info-note" style="font-size:11px;margin-top:4px;">${e.report_count || 0} отчётов</p>
-            </div>
-        </div>`;
-    }).join('');
-
-    if (typeof lucide !== 'undefined') lucide.createIcons();
+    });
+    
+    // Добавляем с высоким выгоранием
+    filtered.forEach(e => {
+        if (highBurnoutIds.has(e.id)) {
+            attentionSet.add(e);
+        }
+    });
+    
+    return Array.from(attentionSet);
 }
 
 // ==================== ВКЛАДКИ ====================
@@ -346,11 +252,9 @@ function switchHRTab(tabName, event) {
 
     if (tabName === 'overview') {
         renderAllCharts();
-        // Скрываем фильтр на вкладке обзор
         const deptFilter = document.getElementById('deptFilter');
         if (deptFilter) deptFilter.style.display = 'none';
     } else {
-        // Показываем фильтр для остальных вкладок
         const deptFilter = document.getElementById('deptFilter');
         if (deptFilter) deptFilter.style.display = 'flex';
         renderDataForTab();
@@ -363,8 +267,8 @@ function renderDataForTab() {
         : allEmployees.filter(e => e.department === currentDepartment);
 
     if (currentTab === 'attention') {
-        // Объединенная вкладка
-        renderAttentionTab();
+        const attentionList = getAttentionEmployees(filtered);
+        renderEmployeeList('attentionList', attentionList);
     } else if (currentTab === 'best') {
         const bestEmployees = filtered.filter(e => 
             e.has_reports && 
@@ -583,10 +487,12 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
         </div>
 
-        <!-- ═══ ОБРАТИТЕ ВНИМАНИЕ (объединено выгорание + низкий балл) ═══ -->
+        <!-- ═══ ОБРАТИТЕ ВНИМАНИЕ (единый список: выгорание + низкий балл) ═══ -->
         <div id="tab-attention" class="tab-content">
             <div class="card">
-                <div id="attentionCombinedContainer"></div>
+                <h3 class="section-title">Сотрудники, требующие внимания</h3>
+                <p class="info-note" style="margin-bottom:16px;">Низкий моральный дух (менее 60%) или высокий риск выгорания (более 50%)</p>
+                <div id="attentionList"></div>
             </div>
         </div>
 
